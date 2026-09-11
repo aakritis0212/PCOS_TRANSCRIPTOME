@@ -1,461 +1,214 @@
-# ============================================================
-# PCOS TRANSCRIPTOMICS STREAMLIT APP
-# Gene ID -> Gene Symbol -> Gene Description
-# ============================================================
-
 import streamlit as st
 import pandas as pd
 import numpy as np
 import plotly.express as px
 from pathlib import Path
 
-# ============================================================
-# 1. APP CONFIGURATION
-# ============================================================
+st.set_page_config(page_title='PCOS Transcriptomics Portal', page_icon='🧬', layout='wide')
 
-st.set_page_config(
-    page_title="PCOS Transcriptomics Portal",
-    page_icon="🧬",
-    layout="wide",
-    initial_sidebar_state="expanded"
-)
-
-st.title("🧬 PCOS Transcriptomics Analysis Portal")
-st.markdown(
-    """
-    **Integrated PCOS transcriptomic analysis**
-
-    Differential Expression → GSEA → TF Regulation → Candidate Genes
-    """
-)
-
-# ============================================================
-# 2. FILE LOCATIONS
-# ============================================================
-
-BASE_DIR = Path(__file__).resolve().parent
-
-DE_FILE = BASE_DIR / "pcos_deseq2_results.csv"
-GSEA_FILE = BASE_DIR / "gsea_results_precalculated.csv"
-TF_FILE = BASE_DIR / "tf_screening_results.csv"
-ANNOTATION_FILE = BASE_DIR / "Human.GRCh38.p13.annot.tsv"
-
-
-# ============================================================
-# 3. LOAD FILES
-# ============================================================
+BASE = Path(__file__).resolve().parent
+DE_FILE = BASE / 'pcos_deseq2_results.csv'
+GSEA_FILE = BASE / 'gsea_results_precalculated.csv'
+TF_FILE = BASE / 'tf_screening_results.csv'
+ANNOT_FILE = BASE / 'Human.GRCh38.p13.annot.tsv'
 
 @st.cache_data
-def load_csv(file_path):
-    """Load CSV safely."""
-    return pd.read_csv(file_path)
 
+def load_csv(path, sep=','):
+    return pd.read_csv(path, sep=sep, dtype=str, low_memory=False)
 
-@st.cache_data
-def load_annotation(file_path):
-    """
-    Load NCBI GRCh38 annotation file.
-
-    Required columns:
-    GeneID
-    Symbol
-    Description
-    """
-    annotation = pd.read_csv(
-        file_path,
-        sep="\t",
-        dtype=str,
-        low_memory=False
-    )
-
-    required_columns = [
-        "GeneID",
-        "Symbol",
-        "Description"
-    ]
-
-    missing = [
-        col for col in required_columns
-        if col not in annotation.columns
-    ]
-
-    if missing:
-        raise ValueError(
-            f"Annotation file is missing columns: {missing}"
-        )
-
-    annotation = annotation[
-        ["GeneID", "Symbol", "Description"]
-    ].copy()
-
-    annotation["GeneID"] = annotation["GeneID"].astype(str).str.strip()
-    annotation["Symbol"] = annotation["Symbol"].fillna("")
-    annotation["Description"] = annotation["Description"].fillna("")
-
-    # Remove duplicate GeneIDs
-    annotation = annotation.drop_duplicates(
-        subset=["GeneID"],
-        keep="first"
-    )
-
-    return annotation
-
-
-# ============================================================
-# 4. CHECK REQUIRED FILES
-# ============================================================
-
-missing_files = []
-
-for file_path in [
-    DE_FILE,
-    GSEA_FILE,
-    TF_FILE,
-    ANNOTATION_FILE
-]:
-    if not file_path.exists():
-        missing_files.append(file_path.name)
-
-if missing_files:
-
-    st.error("❌ The following required files are missing:")
-
-    for file_name in missing_files:
-        st.write(f"- `{file_name}`")
-
-    st.info(
-        """
-        Put these files in the **same folder as appy.py**.
-        """
-    )
-
-    st.stop()
-
-
-# ============================================================
-# 5. LOAD DATA
-# ============================================================
+for p in [DE_FILE, GSEA_FILE, TF_FILE, ANNOT_FILE]:
+    if not p.exists():
+        st.error(f'Missing required file: {p.name}')
+        st.info('Put app.py and all four data files in the same Streamlit folder.')
+        st.stop()
 
 try:
-
     de = load_csv(DE_FILE)
     gsea = load_csv(GSEA_FILE)
     tf = load_csv(TF_FILE)
-    annotation = load_annotation(ANNOTATION_FILE)
-
-except Exception as e:
-
-    st.error("Error loading files.")
-    st.exception(e)
+    annot = load_csv(ANNOT_FILE, sep='\t')
+except Exception as exc:
+    st.error('Could not read one or more input files.')
+    st.exception(exc)
     st.stop()
 
-
-# ============================================================
-# 6. STANDARDIZE GENE IDs
-# ============================================================
-
-if "GeneID" not in de.columns:
-
-    st.error(
-        "The DESeq2 file does not contain a `GeneID` column."
-    )
-
+# ---------- Annotation ----------
+if 'GeneID' not in de.columns:
+    st.error('pcos_deseq2_results.csv must contain a GeneID column.')
     st.stop()
 
-
-de["GeneID"] = (
-    de["GeneID"]
-    .astype(str)
-    .str.replace(r"\.0$", "", regex=True)
-    .str.strip()
-)
-
-
-# ============================================================
-# 7. MERGE GENE ANNOTATION
-# ============================================================
-
-de = de.merge(
-    annotation,
-    on="GeneID",
-    how="left"
-)
-
-
-# ============================================================
-# 8. CLEAN ANNOTATION
-# ============================================================
-
-de["Symbol"] = de["Symbol"].fillna("")
-de["Description"] = de["Description"].fillna("")
-
-
-# If no Symbol is found, use GeneID
-de["Display_Gene"] = np.where(
-    de["Symbol"].str.strip() != "",
-    de["Symbol"],
-    "GeneID:" + de["GeneID"]
-)
-
-
-# ============================================================
-# 9. CREATE USER-FRIENDLY GENE LABEL
-# ============================================================
-
-de["Gene_Label"] = np.where(
-    de["Description"].str.strip() != "",
-    de["Display_Gene"] + " — " + de["Description"],
-    de["Display_Gene"]
-)
-
-
-# ============================================================
-# 10. SIDEBAR
-# ============================================================
-
-st.sidebar.header("⚙️ Analysis Controls")
-
-padj_cutoff = st.sidebar.number_input(
-    "Adjusted P-value cutoff",
-    min_value=0.001,
-    max_value=0.20,
-    value=0.05,
-    step=0.001
-)
-
-log2fc_cutoff = st.sidebar.number_input(
-    "Absolute log2 Fold Change cutoff",
-    min_value=0.0,
-    max_value=10.0,
-    value=1.0,
-    step=0.1
-)
-
-
-# ============================================================
-# 11. PROCESS DESEQ2 RESULTS
-# ============================================================
-
-required_de_columns = [
-    "padj",
-    "log2FoldChange"
-]
-
-missing_de_columns = [
-    col for col in required_de_columns
-    if col not in de.columns
-]
-
-if missing_de_columns:
-
-    st.error(
-        f"DESeq2 file is missing: {missing_de_columns}"
-    )
-
+if not {'GeneID', 'Symbol', 'Description'}.issubset(annot.columns):
+    st.error('Human.GRCh38.p13.annot.tsv must contain GeneID, Symbol and Description columns.')
     st.stop()
 
+def clean_id(series):
+    return (series.astype(str).str.strip().str.replace(r'\.0$', '', regex=True))
 
-de["padj"] = pd.to_numeric(
-    de["padj"],
-    errors="coerce"
-)
+de['GeneID'] = clean_id(de['GeneID'])
+annot['GeneID'] = clean_id(annot['GeneID'])
+annot = annot[['GeneID', 'Symbol', 'Description']].drop_duplicates('GeneID')
 
-de["log2FoldChange"] = pd.to_numeric(
-    de["log2FoldChange"],
-    errors="coerce"
-)
+de = de.merge(annot, on='GeneID', how='left', suffixes=('', '_annotation'))
+de['Symbol'] = de['Symbol'].fillna('').astype(str).str.strip()
+de['Description'] = de['Description'].fillna('').astype(str).str.strip()
+de['Display_Gene'] = np.where(de['Symbol'].ne(''), de['Symbol'], 'GeneID:' + de['GeneID'])
 
-de = de.replace(
-    [np.inf, -np.inf],
-    np.nan
-)
+# ---------- Numeric fields ----------
+for col in ['baseMean', 'log2FoldChange', 'lfcSE', 'stat', 'pvalue', 'padj']:
+    if col in de.columns:
+        de[col] = pd.to_numeric(de[col], errors='coerce')
 
-de = de.dropna(
-    subset=["padj", "log2FoldChange"]
-)
+if 'padj' not in de.columns or 'log2FoldChange' not in de.columns:
+    st.error('DESeq2 results must contain padj and log2FoldChange columns.')
+    st.stop()
 
+de = de.replace([np.inf, -np.inf], np.nan)
+de = de.dropna(subset=['padj', 'log2FoldChange']).copy()
 
-# ============================================================
-# 12. VOLCANO PLOT VARIABLES
-# ============================================================
+st.title('🧬 PCOS Transcriptomics Analysis Portal')
+st.caption('Differential Expression → GSEA → TF Regulation → Gene Annotation → Validation')
 
-de["-log10(padj)"] = -np.log10(
-    de["padj"].clip(lower=1e-300)
-)
+# ---------- Sidebar ----------
+st.sidebar.header('⚙️ Analysis Controls')
+padj_cutoff = st.sidebar.number_input('Adjusted P-value cutoff', min_value=0.001, max_value=0.20, value=0.05, step=0.001)
+lfc_cutoff = st.sidebar.number_input('|log2FC| cutoff', min_value=0.0, max_value=10.0, value=1.0, step=0.1)
 
-de["Significance"] = "Not significant"
+# ---------- DEG classification ----------
+de['-log10(padj)'] = -np.log10(de['padj'].clip(lower=1e-300))
+de['Significance'] = 'Not significant'
+de.loc[(de['padj'] < padj_cutoff) & (de['log2FoldChange'] >= lfc_cutoff), 'Significance'] = 'Upregulated'
+de.loc[(de['padj'] < padj_cutoff) & (de['log2FoldChange'] <= -lfc_cutoff), 'Significance'] = 'Downregulated'
 
-de.loc[
-    (
-        (de["padj"] < padj_cutoff)
-        &
-        (de["log2FoldChange"] >= log2fc_cutoff)
-    ),
-    "Significance"
-] = "Upregulated"
+up = int((de['Significance'] == 'Upregulated').sum())
+down = int((de['Significance'] == 'Downregulated').sum())
 
-de.loc[
-    (
-        (de["padj"] < padj_cutoff)
-        &
-        (de["log2FoldChange"] <= -log2fc_cutoff)
-    ),
-    "Significance"
-] = "Downregulated"
+# ---------- Tabs ----------
+tabs = st.tabs(['📊 Overview', '🌋 Differential Expression', '🧬 GSEA', '🎯 TF Regulators', '🔎 Gene Explorer', '🧪 Validation'])
 
+# ---------- Overview ----------
+with tabs[0]:
+    c1, c2, c3, c4 = st.columns(4)
+    c1.metric('Genes analysed', f'{len(de):,}')
+    c2.metric('Upregulated', f'{up:,}')
+    c3.metric('Downregulated', f'{down:,}')
 
-# ============================================================
-# 13. SUMMARY COUNTS
-# ============================================================
-
-upregulated = int(
-    (
-        de["Significance"] == "Upregulated"
-    ).sum()
-)
-
-downregulated = int(
-    (
-        de["Significance"] == "Downregulated"
-    ).sum()
-)
-
-significant_genes = upregulated + downregulated
-
-
-if "FDR q-val" in gsea.columns:
-
-    gsea["FDR q-val"] = pd.to_numeric(
-        gsea["FDR q-val"],
-        errors="coerce"
-    )
-
-    significant_pathways = int(
-        (
-            gsea["FDR q-val"] < padj_cutoff
-        ).sum()
-    )
-
-else:
-
-    significant_pathways = 0
-
-
-# ============================================================
-# 14. MAIN TABS
-# ============================================================
-
-tab_overview, tab_deg, tab_gsea, tab_tf, tab_gene = st.tabs(
-    [
-        "📊 Overview",
-        "🌋 Differential Expression",
-        "🧬 GSEA",
-        "🎯 TF Regulators",
-        "🔎 Gene Explorer"
-    ]
-)
-
-
-# ============================================================
-# TAB 1 — OVERVIEW
-# ============================================================
-
-with tab_overview:
-
-    st.header("Study Overview")
-
-    col1, col2, col3, col4 = st.columns(4)
-
-    col1.metric(
-        "Genes analysed",
-        f"{len(de):,}"
-    )
-
-    col2.metric(
-        "Upregulated",
-        f"{upregulated:,}"
-    )
-
-    col3.metric(
-        "Downregulated",
-        f"{downregulated:,}"
-    )
-
-    col4.metric(
-        "Significant pathways",
-        f"{significant_pathways:,}"
-    )
+    if 'FDR q-val' in gsea.columns:
+        gsea_fdr = pd.to_numeric(gsea['FDR q-val'], errors='coerce')
+        c4.metric('GSEA FDR < cutoff', f'{int((gsea_fdr < padj_cutoff).sum()):,}')
+    else:
+        c4.metric('GSEA pathways', 'N/A')
 
     st.divider()
+    annotated = int(de['Symbol'].ne('').sum())
+    coverage = annotated / len(de) * 100 if len(de) else 0
+    st.subheader('Gene annotation')
+    st.write(f'**Annotation coverage:** {annotated:,} / {len(de):,} genes ({coverage:.2f}%)')
+    st.info('Gene IDs are mapped to Gene Symbol and Gene Description using Human.GRCh38.p13.annot.tsv.')
 
-    st.subheader("🧬 Gene annotation")
+    cols = [c for c in ['GeneID', 'Symbol', 'Description', 'log2FoldChange', 'pvalue', 'padj'] if c in de.columns]
+    st.subheader('Top genes by adjusted P-value')
+    st.dataframe(de.sort_values('padj').head(25)[cols], use_container_width=True, hide_index=True)
 
-    annotated_count = int(
-        (
-            de["Symbol"].str.strip() != ""
-        ).sum()
+# ---------- DEGs ----------
+with tabs[1]:
+    st.header('🌋 Differentially Expressed Genes')
+    fig = px.scatter(
+        de, x='log2FoldChange', y='-log10(padj)', color='Significance',
+        hover_name='Display_Gene',
+        hover_data={'GeneID': True, 'Symbol': True, 'Description': True, 'log2FoldChange': ':.3f', 'padj': ':.3e'},
+        title='PCOS vs Control — Volcano Plot'
     )
+    fig.add_vline(x=lfc_cutoff, line_dash='dash')
+    fig.add_vline(x=-lfc_cutoff, line_dash='dash')
+    fig.add_hline(y=-np.log10(padj_cutoff), line_dash='dash')
+    fig.update_layout(height=650)
+    st.plotly_chart(fig, use_container_width=True)
 
-    annotation_percentage = (
-        annotated_count / len(de) * 100
-        if len(de) > 0
-        else 0
-    )
+    sig = de[de['Significance'] != 'Not significant'].sort_values('padj')
+    cols = [c for c in ['GeneID', 'Symbol', 'Description', 'baseMean', 'log2FoldChange', 'lfcSE', 'stat', 'pvalue', 'padj'] if c in sig.columns]
+    st.subheader(f'Significant genes ({len(sig)})')
+    st.dataframe(sig[cols], use_container_width=True, hide_index=True)
+    st.download_button('⬇️ Download annotated DEG results', sig.to_csv(index=False).encode('utf-8'), 'PCOS_annotated_DEGs.csv', 'text/csv')
 
-    st.write(
-        f"""
-        **Gene annotation coverage:**
-        {annotated_count:,} / {len(de):,}
-        genes ({annotation_percentage:.2f}%)
-        """
-    )
+# ---------- GSEA ----------
+with tabs[2]:
+    st.header('🧬 Gene Set Enrichment Analysis')
+    if gsea.empty or 'FDR q-val' not in gsea.columns:
+        st.warning('GSEA results are not available.')
+    else:
+        x = gsea.copy()
+        x['FDR q-val'] = pd.to_numeric(x['FDR q-val'], errors='coerce')
+        if 'NES' in x.columns:
+            x['NES'] = pd.to_numeric(x['NES'], errors='coerce')
+        x = x[x['FDR q-val'] < padj_cutoff].copy()
+        if 'NES' in x.columns and not x.empty:
+            x['absNES'] = x['NES'].abs()
+            top = x.sort_values('absNES', ascending=False).head(25)
+            fig = px.bar(top.sort_values('NES'), x='NES', y='Term', orientation='h', color='FDR q-val', title='Top Significant Pathways')
+            fig.update_layout(height=750)
+            st.plotly_chart(fig, use_container_width=True)
+        else:
+            top = x.head(25)
+        cols = [c for c in ['Term', 'ES', 'NES', 'FDR q-val', 'Lead_genes'] if c in top.columns]
+        st.dataframe(top[cols], use_container_width=True, hide_index=True)
 
-    st.info(
-        """
-        Gene identifiers are mapped using the supplied
-        `Human.GRCh38.p13.annot.tsv` annotation file.
-        """
-    )
+# ---------- TF ----------
+with tabs[3]:
+    st.header('🎯 Candidate Transcriptional Regulators')
+    if tf.empty or 'FDR q-val' not in tf.columns:
+        st.warning('TF screening results are not available.')
+    else:
+        x = tf.copy()
+        x['FDR q-val'] = pd.to_numeric(x['FDR q-val'], errors='coerce')
+        if 'NES' in x.columns:
+            x['NES'] = pd.to_numeric(x['NES'], errors='coerce')
+        x = x[x['FDR q-val'] < padj_cutoff].copy()
+        if 'NES' in x.columns and not x.empty:
+            x = x.sort_values('NES', key=lambda s: s.abs(), ascending=False)
+            fig = px.bar(x, x='NES', y='Term', orientation='h', color='FDR q-val', title='Significant TF Signatures')
+            fig.update_layout(height=550)
+            st.plotly_chart(fig, use_container_width=True)
+        cols = [c for c in ['Term', 'NES', 'FDR q-val', 'Lead_genes'] if c in x.columns]
+        st.dataframe(x[cols], use_container_width=True, hide_index=True)
 
-    st.subheader("Top differentially expressed genes")
+# ---------- Gene Explorer ----------
+with tabs[4]:
+    st.header('🔎 Gene Explorer')
+    st.write('Search by **Gene ID**, **Gene Symbol**, or **Gene Description**.')
+    query = st.text_input('Search gene', placeholder='Example: 205, FOXM1, kinase...')
+    if query.strip():
+        q = query.strip().lower()
+        mask = (
+            de['GeneID'].str.lower().str.contains(q, na=False) |
+            de['Symbol'].str.lower().str.contains(q, na=False) |
+            de['Description'].str.lower().str.contains(q, na=False)
+        )
+        result = de[mask].copy()
+        if result.empty:
+            st.warning('No matching genes found.')
+        else:
+            st.success(f'{len(result)} matching gene(s) found.')
+            cols = [c for c in ['GeneID', 'Symbol', 'Description', 'log2FoldChange', 'pvalue', 'padj', 'Significance'] if c in result.columns]
+            st.dataframe(result[cols], use_container_width=True, hide_index=True)
+    st.divider()
+    n = st.slider('Number of genes to browse', 10, 200, 50, 10)
+    cols = [c for c in ['GeneID', 'Symbol', 'Description', 'log2FoldChange', 'padj'] if c in de.columns]
+    st.dataframe(de.sort_values('padj').head(n)[cols], use_container_width=True, hide_index=True)
 
-    display_columns = [
-        "GeneID",
-        "Symbol",
-        "Description",
-        "log2FoldChange",
-        "padj"
-    ]
+# ---------- Validation ----------
+with tabs[5]:
+    st.header('🧪 Independent Validation Framework')
+    st.markdown('''
+    **Selected external cohorts**
 
-    display_columns = [
-        col
-        for col in display_columns
-        if col in de.columns
-    ]
+    - **GSE293353:** bulk granulosa-cell RNA-seq; 9 PCOS and 9 controls.
+    - **GSE193123:** bulk granulosa-cell RNA-seq; small cohort, useful but lower statistical power.
+    - **GSE155489:** cumulus granulosa-cell RNA-seq; useful as an orthogonal cell-context validation.
+    - **GSE240688:** single-cell granulosa-cell RNA-seq; useful for cell-state/localization validation.
+    ''')
+    st.warning('External cohorts must be analysed within their own study before replication is claimed. Do not blindly merge raw count matrices across studies.')
+    st.markdown('**Recommended validation:** compare predefined candidate genes for direction consistency, rank correlation, pathway replication, and TF-target enrichment in independent cohorts.')
 
-    top_genes = (
-        de
-        .sort_values("padj")
-        .head(25)
-    )
-
-    st.dataframe(
-        top_genes[display_columns],
-        use_container_width=True,
-        hide_index=True
-    )
-
-
-# ============================================================
-# TAB 2 — DIFFERENTIAL EXPRESSION
-# ============================================================
-
-with tab_deg:
-
-    st.header("🌋 Differentially Expressed Genes")
-
-    st.caption(
-        f"""
-        Thresholds:
-        adjusted P-value < {padj_cutoff}
-        and |log2FC| ≥ {log2fc_cutoff}
+st.divider()
+st.caption('PCOS Transcriptomics Portal • Human GRCh38 annotation • Research / hypothesis-generation tool')
