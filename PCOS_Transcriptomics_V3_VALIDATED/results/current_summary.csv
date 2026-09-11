@@ -1,0 +1,2 @@
+DEGs_padj_lt_0.05_absLFC_ge_1,upregulated,downregulated,GSEA_FDR_lt_0.05,TF_FDR_lt_0.05
+85,58,27,65,4
