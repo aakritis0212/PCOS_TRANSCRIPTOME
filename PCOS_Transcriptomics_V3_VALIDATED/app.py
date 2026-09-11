@@ -1,4 +1,3 @@
-```python
 # ============================================================
 # PCOS TRANSCRIPTOMICS STREAMLIT APP
 # Gene ID -> Gene Symbol -> Gene Description
@@ -460,5 +459,3 @@ with tab_deg:
         Thresholds:
         adjusted P-value < {padj_cutoff}
         and |log2FC| ≥ {log2fc_cutoff}
-       
-```
